@@ -1,6 +1,11 @@
 # MIMFS
 
-A multithreaded in-memory file system for C.
+**A multithreaded in-memory file system for C.**
+
+![Language](https://img.shields.io/badge/language-C11-00599C?style=flat-square)
+![Threads](https://img.shields.io/badge/threads-POSIX-4b5563?style=flat-square)
+![Dependencies](https://img.shields.io/badge/dependencies-none-4b5563?style=flat-square)
+![License](https://img.shields.io/badge/license-MIT-1f6feb?style=flat-square)
 
 MIMFS implements a complete POSIX-style filesystem inside a memory region that the
 caller provides. It performs no dynamic allocation of its own, at any point, so the
@@ -8,11 +13,64 @@ region may be a static buffer, a shared mapping, a huge page arena or battery-ba
 memory. Every operation is safe to call from any number of threads at once with no
 external serialisation.
 
-The implementation is not a demonstration. It has inodes with a three-level indirect
-block map reaching four terabytes per file, block groups with lock-free allocation,
-hard links, symbolic links with inline storage, sparse files, atomic rename, shared
-file offsets, positioned transfers, directory streams and reference-counted inode
-lifetimes that keep an unlinked file alive while it is still open.
+---
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Quick Start](#quick-start)
+- [Motivation](#motivation)
+- [Building and Installation](#building-and-installation)
+  - [Requirements](#requirements)
+  - [Make Targets](#make-targets)
+  - [Vendoring](#vendoring)
+- [API Reference](#api-reference)
+  - [Status Codes](#status-codes)
+  - [Volume Lifecycle](#volume-lifecycle)
+  - [File Operations](#file-operations)
+  - [Namespace Operations](#namespace-operations)
+  - [Metadata and Directory Streams](#metadata-and-directory-streams)
+  - [Path Semantics](#path-semantics)
+- [Concurrency Model](#concurrency-model)
+  - [Guarantees](#guarantees)
+  - [Worked Example](#worked-example)
+  - [Lock Granularity](#lock-granularity)
+- [Architecture](#architecture)
+  - [Region Layout](#region-layout)
+  - [Cache Alignment](#cache-alignment)
+  - [Lock-Free Allocation](#lock-free-allocation)
+  - [Block Map](#block-map)
+  - [Directory Format](#directory-format)
+  - [Inode Lifetime](#inode-lifetime)
+- [Format Limits](#format-limits)
+- [Benchmarks](#benchmarks)
+- [Testing and Verification](#testing-and-verification)
+- [Project Structure](#project-structure)
+- [License](#license)
+
+---
+
+## Overview
+
+The implementation is not a demonstration. It provides:
+
+- **Caller-owned storage.** A volume is one memory region supplied by the caller. The
+  library never allocates.
+- **Position independence.** The region holds byte offsets rather than absolute
+  pointers, so it can be mapped at a different address by a different process, or
+  relocated wholesale with a single copy, and still mount.
+- **Thread safety by construction.** Every entry point may be called concurrently. No
+  external locking is required, and there is no global lock on the data path.
+- **Lock-free allocation.** Blocks and inodes are claimed with atomic operations against
+  per-group bitmaps.
+- **POSIX-style semantics.** Hard links, symbolic links with inline storage, sparse
+  files, atomic rename, shared file offsets, positioned transfers and directory streams.
+- **Files up to 4 TiB.** Twelve direct block pointers plus a three-level indirect map.
+- **Reference-counted inode lifetimes.** An unlinked file stays alive and readable while
+  a descriptor is still open on it.
+- **No dependencies.** C11, the C library and POSIX threads.
+
+## Quick Start
 
 ```c
 #include <mimfs/mimfs.h>
@@ -31,20 +89,7 @@ mimfs_write(volume, descriptor, "started\n", 8);
 mimfs_close(volume, descriptor);
 ```
 
-## Contents
-
-- [Why](#why)
-- [Building](#building)
-- [Interface](#interface)
-- [Concurrency](#concurrency)
-- [Design](#design)
-- [Limits](#limits)
-- [Measurements](#measurements)
-- [Verification](#verification)
-- [Repository layout](#repository-layout)
-- [License](#license)
-
-## Why
+## Motivation
 
 Three situations call for a filesystem that lives entirely in memory and is addressed
 through paths rather than through pointers.
@@ -63,34 +108,49 @@ device underneath, and paying for one costs a translation layer and a page cache
 it is one call and discards everything. There is no temporary directory to clean up, no
 file descriptor to leak into the next test, and no dependence on the state of the host.
 
-## Building
+## Building and Installation
 
-MIMFS is C11 and depends on nothing beyond the C library and POSIX threads.
+### Requirements
 
-```
-make                # static library at build/libmimfs.a
-make shared         # shared library at build/libmimfs.so
-make tests          # build and run the test suite
-make benchmark      # build and run the measurements
-make examples       # build the two example programs
-make install        # install headers and the library under PREFIX
-```
+A C11 compiler and POSIX threads. Nothing else. There is no configuration step and no
+generated header.
 
-To vendor it into an existing project, add `include/` to the include path and compile
-everything under `src/`. There is no configuration step and no generated header.
+### Make Targets
 
-```
+| Target | Result |
+| --- | --- |
+| `make` | Static library at `build/libmimfs.a` |
+| `make shared` | Shared library at `build/libmimfs.so` |
+| `make tests` | Build and run the test suite |
+| `make tests-strict` | The same, under the address and undefined behaviour sanitizers |
+| `make benchmark` | Build and run the measurements |
+| `make examples` | Build the two example programs |
+| `make format-check` | Fail if any source file is not formatted |
+| `make analyse` | Run the compiler's static analyser over the library |
+| `make coverage` | Run the tests with coverage instrumentation |
+| `make install` | Install headers and the library under `PREFIX` |
+
+`make help` lists every target with its description.
+
+### Vendoring
+
+To fold MIMFS into an existing project, add `include/` to the include path and compile
+everything under `src/`.
+
+```sh
 cc -std=c11 -Iinclude -Isrc -O2 $(find src -name '*.c') your_program.c -lpthread
 ```
 
-## Interface
+## API Reference
+
+### Status Codes
 
 Every entry point reports success as a non-negative value and failure as a negated
 `MIMFS_STATUS_*` code. The numeric values mirror the standard error numbers, so code
 that already speaks errno can pass the negated result straight to its reporting layer.
 `mimfs_describe_status` turns any code into a stable English description.
 
-### Volume lifecycle
+### Volume Lifecycle
 
 | Function | Purpose |
 | --- | --- |
@@ -99,7 +159,7 @@ that already speaks errno can pass the negated result straight to its reporting 
 | `mimfs_unmount` | Close every descriptor and detach |
 | `mimfs_query_volume_statistics` | Geometry and free space accounting |
 
-### Files
+### File Operations
 
 | Function | Purpose |
 | --- | --- |
@@ -112,7 +172,7 @@ that already speaks errno can pass the negated result straight to its reporting 
 | `mimfs_truncate_by_path`, `mimfs_truncate_by_descriptor` | Set a file's length |
 | `mimfs_synchronize` | Publish prior writes to later observers |
 
-### Namespace
+### Namespace Operations
 
 | Function | Purpose |
 | --- | --- |
@@ -121,7 +181,7 @@ that already speaks errno can pass the negated result straight to its reporting 
 | `mimfs_create_symbolic_link`, `mimfs_read_symbolic_link` | Symbolic links |
 | `mimfs_rename` | Move a name, atomically |
 
-### Metadata and directory streams
+### Metadata and Directory Streams
 
 | Function | Purpose |
 | --- | --- |
@@ -129,12 +189,16 @@ that already speaks errno can pass the negated result straight to its reporting 
 | `mimfs_change_permissions`, `mimfs_change_ownership`, `mimfs_set_times` | Modify metadata |
 | `mimfs_open_directory`, `mimfs_read_directory`, `mimfs_rewind_directory`, `mimfs_close_directory` | Enumerate a directory |
 
+### Path Semantics
+
 Paths are absolute. A volume has no working directory, because a working directory is a
 property of a thread rather than of a filesystem, and inventing one would make every
 operation depend on state shared between threads. Relative symbolic link targets are of
 course resolved against the directory holding the link.
 
-## Concurrency
+## Concurrency Model
+
+### Guarantees
 
 Four guarantees, which are what make external locking unnecessary:
 
@@ -153,6 +217,8 @@ Two things are deliberately not guaranteed, matching the behaviour of general pu
 filesystems: a read racing a write to a *different* region of the same file may be
 ordered either way, and operations are not transactional across more than one path.
 
+### Worked Example
+
 `examples/mimfs_pipeline.c` is a worked demonstration. Four producer threads and four
 consumer threads move two thousand work items through one volume with no mutex, no
 condition variable and no work queue in the application. Consumers claim items purely
@@ -160,7 +226,7 @@ by racing to create a marker file with `MIMFS_OPEN_EXCLUSIVE`, and report result
 appending to one shared file. The program then asserts that every item was produced,
 every item was consumed exactly once, and every result was recorded.
 
-### How the locking is granular
+### Lock Granularity
 
 There is no global lock on the data path. What guards what:
 
@@ -186,9 +252,9 @@ path text is. Rename is the one operation that must hold two directories at once
 takes the volume-wide rename lock first, which collapses the whole class of
 parent-and-child inversion cycles that moving a directory would otherwise create.
 
-## Design
+## Architecture
 
-### Region layout
+### Region Layout
 
 ```
 +--------------------------------------+ offset 0, cache line aligned
@@ -227,7 +293,7 @@ reference count, and both open file tables. Mounting rewrites all of the volatil
 which is why a volume left behind by a process that died mid-operation mounts cleanly
 with no descriptor leaked and no lock stuck held.
 
-### Cache alignment
+### Cache Alignment
 
 Alignment here is not decoration. Three structures have their sizes fixed by static
 assertion, and the build fails if a field is ever added without adjusting the reserved
@@ -250,7 +316,7 @@ area:
   groups would share one line, and the lock-free allocator would be slower than a
   locked one.
 
-### Lock-free allocation
+### Lock-Free Allocation
 
 Claiming a block is three steps, each one atomic operation:
 
@@ -275,7 +341,7 @@ blocks even while other threads allocate concurrently. A request with no localit
 offer starts from a rotor that advances on every use, so unrelated threads begin in
 different groups instead of piling onto group zero.
 
-### Block map
+### Block Map
 
 An inode holds fifteen pointer slots:
 
@@ -307,7 +373,7 @@ block is cleared, otherwise the untouched part would expose whatever the previou
 of the block left behind. This is a correctness requirement, not an optimisation, and it
 is why the allocator takes an initialisation policy from its caller.
 
-### Directories
+### Directory Format
 
 A directory is a file whose content is an array of fixed-size 64-byte entry slots, 64
 per block, with a zero inode number marking a slot free.
@@ -336,7 +402,7 @@ reserved byte in the entry header is there to flag it. Until then, a workload wi
 wide directories should shard them, exactly as one would on a filesystem without a
 directory index.
 
-### Inode lifetime
+### Inode Lifetime
 
 An inode is reachable in two independent ways and lives until both are gone: its hard
 link count, being how many directory entries name it, and its reference count, being how
@@ -348,7 +414,7 @@ Each inode also carries a generation number, incremented every time its number i
 out again. A descriptor remembers the generation it opened, so a stale reference is
 refused rather than silently following an inode number into an unrelated file.
 
-## Limits
+## Format Limits
 
 | Property | Value | Why |
 | --- | --- | --- |
@@ -361,7 +427,7 @@ refused rather than silently following an inode number into an unrelated file.
 | Symbolic link depth | 8 | Turns a link cycle into a clean loop error |
 | Inline symbolic link | 60 bytes | Fits where the block pointers go, so a short link costs no block |
 | Block group span | 16 MiB target | Compromise between fixed per-group cost and number of independent allocation arenas |
-| Smallest volume | about 256 KiB with the defaults | Smaller volumes work with a reduced `maximum_open_file_count` |
+| Smallest volume | About 256 KiB with the defaults | Smaller volumes work with a reduced `maximum_open_file_count` |
 
 Geometry is chosen at format time by a layout engine that searches for the group count
 yielding the most data blocks. Only the final group may be short, which lets a volume of
@@ -369,7 +435,7 @@ any size use essentially all the memory it was given rather than rounding the da
 down to a multiple of the group span. Every parameter of
 `struct mimfs_format_parameters` may be left at zero to take its documented default.
 
-## Measurements
+## Benchmarks
 
 `make benchmark` reports five things: sequential transfer, small transfer to isolate
 per-call overhead, metadata operation rates, path resolution against directory size, and
@@ -381,21 +447,21 @@ directory costs.
 Figures depend entirely on the machine's memory bandwidth and core count, so none are
 quoted here. Run it on the target.
 
-## Verification
+## Testing and Verification
 
 The test suite is 1749 assertions across five groups: volume geometry and mounting, file
 transfers and descriptors, directories, the namespace, and concurrency. It runs clean
-under three configurations:
+under three configurations.
 
-```
+```sh
 make tests           # 1749 checks, 0 failures
 make tests-strict    # the same, under the address and undefined behaviour sanitizers
 ```
 
 The thread sanitizer is run separately because it cannot be combined with the address
-sanitizer:
+sanitizer.
 
-```
+```sh
 make clean
 make OPTIMISATION_FLAGS="-O1 -g -fsanitize=thread" LDFLAGS="-fsanitize=thread" \
      build/mimfs-tests
@@ -413,7 +479,7 @@ The library compiles with no warnings under `-Wall -Wextra -Werror` plus `-Wshad
 `-Wstrict-prototypes`, `-Wmissing-prototypes`, `-Wredundant-decls`, `-Wundef`,
 `-Wwrite-strings`, `-Wvla` and `-Wdouble-promotion`.
 
-## Repository layout
+## Project Structure
 
 ```
 include/mimfs/          the public interface, the only headers a caller needs
