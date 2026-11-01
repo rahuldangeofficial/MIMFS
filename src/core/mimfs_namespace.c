@@ -825,10 +825,6 @@ int mimfs_namespace_rename(struct mimfs_volume *volume, const char *old_path,
              * The two paths already name the same inode. There is nothing to move, and
              * reporting success is the required behaviour rather than a shortcut.
              */
-            status = MIMFS_STATUS_SUCCESS;
-            destination_exists = false;
-            replaced_inode_number = MIMFS_INVALID_INODE_NUMBER;
-
             mimfs_unlock_both_parents(source_parent_inode, destination_parent_inode,
                                       source_parent_number, destination_parent_number);
 

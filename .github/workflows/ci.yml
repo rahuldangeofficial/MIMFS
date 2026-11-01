@@ -1,6 +1,7 @@
-# Runs the full test suite (1749 checks) on every push and pull request, in the three
-# configurations the README documents: plain, address + undefined-behaviour sanitizers,
-# and the thread sanitizer (which cannot be combined with the address sanitizer).
+# Runs the full test suite (1749 checks) on every push and pull request in the three
+# configurations the README documents (plain, address + undefined-behaviour sanitizers,
+# and the thread sanitizer, which cannot be combined with the address sanitizer), plus
+# the Clang static analyser with its findings treated as errors.
 name: CI
 
 on:
@@ -18,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        configuration: [plain, address-undefined, thread]
+        configuration: [plain, address-undefined, thread, static-analysis]
     steps:
       - uses: actions/checkout@v7
 
@@ -35,3 +36,7 @@ jobs:
         run: |
           make OPTIMISATION_FLAGS="-O1 -g -fsanitize=thread" LDFLAGS="-fsanitize=thread" build/mimfs-tests
           ./build/mimfs-tests
+
+      - name: Clang static analyser
+        if: matrix.configuration == 'static-analysis'
+        run: make analyse

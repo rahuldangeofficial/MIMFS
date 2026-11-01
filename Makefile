@@ -165,7 +165,7 @@ format-check:
 	    $(ALL_SOURCES) $(ALL_HEADERS) && echo "every file is formatted"
 
 analyse:
-	$(CC) $(CFLAGS) --analyze $(LIBRARY_SOURCES) -o /dev/null
+	$(CC) $(CFLAGS) --analyze --analyzer-output text -Xclang -analyzer-werror $(LIBRARY_SOURCES)
 	@echo "static analysis found nothing to report"
 
 coverage: OPTIMISATION_FLAGS = -O0 -g --coverage
