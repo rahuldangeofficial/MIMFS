@@ -1,0 +1,37 @@
+# Runs the full test suite (1749 checks) on every push and pull request, in the three
+# configurations the README documents: plain, address + undefined-behaviour sanitizers,
+# and the thread sanitizer (which cannot be combined with the address sanitizer).
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Tests (${{ matrix.configuration }})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [plain, address-undefined, thread]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build and run the test suite
+        if: matrix.configuration == 'plain'
+        run: make tests
+
+      - name: Address and undefined-behaviour sanitizers
+        if: matrix.configuration == 'address-undefined'
+        run: make tests-strict
+
+      - name: Thread sanitizer
+        if: matrix.configuration == 'thread'
+        run: |
+          make OPTIMISATION_FLAGS="-O1 -g -fsanitize=thread" LDFLAGS="-fsanitize=thread" build/mimfs-tests
+          ./build/mimfs-tests

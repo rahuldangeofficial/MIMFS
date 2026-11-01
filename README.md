@@ -2,6 +2,7 @@
 
 **A multithreaded in-memory file system for C.**
 
+[![Tests](https://img.shields.io/github/actions/workflow/status/rahuldangeofficial/MIMFS/ci.yml?branch=main&style=flat-square&label=tests)](https://github.com/rahuldangeofficial/MIMFS/actions/workflows/ci.yml)
 ![Language](https://img.shields.io/badge/language-C11-00599C?style=flat-square)
 ![Threads](https://img.shields.io/badge/threads-POSIX-4b5563?style=flat-square)
 ![Dependencies](https://img.shields.io/badge/dependencies-none-4b5563?style=flat-square)
